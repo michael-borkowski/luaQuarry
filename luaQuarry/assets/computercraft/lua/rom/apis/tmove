@@ -1,0 +1,154 @@
+local ignoreTable = {}
+
+function setIgnoreTable(ignores)
+	ignoreTable = ignores
+end
+
+local function isInteresting(s, data)
+	if not s then return false end
+	if ignoreTable[data.name] then return false end
+	return true
+end
+
+-- breaks a block if it is either interesting, or force is true
+-- if a block is broken, continues breaking until no block is left
+-- if a block re-appears enough times (20), it is added to the ignore
+-- list
+-- if wait is true, we wait after digging for allowing gravel etc. to settle
+function digUntilFree(force, wait)
+	local s,d = turtle.inspect()
+	if not (force or isInteresting(s, d)) then return
+	else turtle.dig() end
+	if wait then sleep(0.5) end
+
+	for i = 1, 20 do
+		if turtle.detect() then turtle.dig()
+		else break end
+		sleep(0.5)
+	end
+	local s, d = turtle.inspect()
+	if s then ignoreTable[d.name] = true end
+end
+
+-- same behavior as digUntilFree(force), but up
+function digUntilFreeUp(force, wait)
+	local s,d = turtle.inspectUp()
+	if not (force or isInteresting(s, d)) then return
+	else turtle.digUp() end
+	if wait then sleep(0.5) end
+
+	for i = 1, 20 do
+		if turtle.detectUp() then turtle.digUp()
+		else break end
+		sleep(0.5)
+	end
+	local s, d = turtle.inspectUp()
+	if s then ignoreTable[d.name] = true end
+end
+
+-- same behavior as digUntilFree(force), but down
+function digUntilFreeDown(force, wait)
+	local s,d = turtle.inspectDown()
+	if not (force or isInteresting(s, d)) then return
+	else turtle.digDown() end
+	if wait then sleep(0.5) end
+
+	for i = 1, 20 do
+		if turtle.detectDown() then turtle.digDown()
+		else break end
+		sleep(0.5)
+	end
+	local s, d = turtle.inspectDown()
+	if s then ignoreTable[d.name] = true end
+end
+
+-- move forward, mine block if necessary, attack if necessary
+function f()
+	if turtle.forward() then return end
+	digUntilFree(true)
+	if turtle.forward() then return end
+	digUntilFree(true, true)
+
+	local s, msg = turtle.forward()
+	if s then return end
+
+	if turtle.detect() then die("block detected in a place where it should not be :(") end
+	for i = 1, 20 do
+		turtle.attack() sleep(0.5)
+		turtle.attack() sleep(0.5)
+		turtle.attack() sleep(0.5)
+		digUntilFree() sleep(0.5)
+		digUntilFree() sleep(0.5)
+		digUntilFree() sleep(0.5)
+		s, msg = turtle.forward()
+		if s then return end
+		sleep(1)
+	end
+	die("could not continue forward :( " .. msg)
+end
+
+function u()
+	if turtle.up() then return end
+	digUntilFreeUp(true)
+	if turtle.up() then return end
+	digUntilFreeUp(true, true)
+
+	local s, msg = turtle.up()
+	if s then return end
+
+	if turtle.detectUp() then die("block detected in a place where it should not be (up) :(") end
+	for i = 1, 20 do
+		turtle.attackUp() sleep(0.5)
+		turtle.attackUp() sleep(0.5)
+		turtle.attackUp() sleep(0.5)
+		digUntilFreeUp() sleep(0.5)
+		digUntilFreeUp() sleep(0.5)
+		digUntilFreeUp() sleep(0.5)
+		if turtle.up() then return end
+		s, msg = turtle.up()
+		if s then return end
+		sleep(1)
+	end
+	die("could not continue up :( " .. msg)
+end
+
+function d()
+	if turtle.down() then return end
+	digUntilFreeDown(true)
+	if turtle.down() then return end
+	digUntilFreeDown(true, true)
+
+	local s, msg = turtle.down()
+	if s then return end
+
+	if turtle.detectDown() then die("block detected in a place where it should not be (down) :(") end
+	for i = 1, 20 do
+		turtle.attackDown() sleep(0.5)
+		turtle.attackDown() sleep(0.5)
+		turtle.attackDown() sleep(0.5)
+		digUntilFreeDown() sleep(0.5)
+		digUntilFreeDown() sleep(0.5)
+		digUntilFreeDown() sleep(0.5)
+		s, msg = turtle.down()
+		if s then return end
+		sleep(1)
+	end
+	die("could not continue down :( " .. msg)
+end
+
+-- move forward using f(), but also check surroundings
+-- conditionalIgnore is a convenience parameter: if true, only do f()
+function ff(conditionalIgnore)
+	f()
+	if conditionalIgnore then return end
+	digUntilFreeUp()
+	digUntilFreeDown()
+	
+	turtle.turnLeft()
+	digUntilFree()
+	
+	turtle.turnRight()
+	turtle.turnRight()
+	digUntilFree()
+	turtle.turnLeft()
+end

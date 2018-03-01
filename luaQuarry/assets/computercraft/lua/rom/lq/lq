@@ -1,0 +1,498 @@
+IGNORE = {
+	"minecraft:cobblestone",
+	"minecraft:stone",
+	"minecraft:gravel",
+	"minecraft:water",
+	"minecraft:flowing_water",
+	"minecraft:lava",
+	"minecraft:flowing_lava",
+	"minecraft:dirt",
+	"minecraft:bedrock",
+	"minecraft:netherrack",
+	"minecraft:soul_sand" }
+
+SIDES = { "left", "right", "top", "bottom", "front", "back" }
+PROTOCOL = "luaQuarry"
+PERSISTENCE_FILE = "/state.json"
+
+MIN_FREE_SLOTS = 4
+B_SPACING = 5
+
+-- ===========================================
+-- ===========================================
+
+state = {}
+
+resume = false
+
+ignoreTable = {}
+for index, value in ipairs(IGNORE) do ignoreTable[value] = true end
+tmove.setIgnoreTable(ignoreTable)
+
+label = os.getComputerLabel()
+if label == nil then error("ERROR: no label set! (use \"label set xyz\" in OS shell)") end
+
+rednet_side = nil
+function rednetOpen()
+	for index, value in ipairs(SIDES) do
+		if peripheral.getType(value) == "modem" then
+			rednet.open(value)
+			rednet_side = value
+			break
+		end
+	end
+end
+
+function rednetClose()
+	if rednet_side ~= nil then rednet.close(rednet_side) end
+end
+
+function rednetSend()
+	if rednet_side ~= nil then
+		msg = {}
+		msg.quarryId = label
+		msg.state = state
+		rednet.broadcast(msg, PROTOCOL)
+	end
+end
+
+function loadState()
+	if not pcall(function()
+			file = fs.open(PERSISTENCE_FILE,"r")
+			data = file.readAll()
+			file.close()
+			cState = textutils.unserialize(data)
+			temp = "Status: " .. cState.status
+			temp = "Position: " .. cState.A .. "/" .. cState.B .. "/" .. cState.C
+			state = cState
+		end) then
+		initState()
+	end
+end
+
+function saveState()
+	file = fs.open(PERSISTENCE_FILE,"w")
+	file.write(textutils.serialize(state))
+	file.close()
+	rednetSend()
+end
+
+function initState()
+	resume = false
+	state = {}
+	state.A = 0
+	state.B = 0
+	state.C = 0
+	state.Ax = 0
+	state.Bx = 0
+	state.Cx = 0
+	state.progress = 0
+	state.status = ST_FINDHOME
+	state.message = ""
+	saveState()
+end
+
+function s()
+	saveState()
+	print(state.status .. " " .. state.A .. "/" .. state.B .. "/" .. state.C .. " [" .. state.Ax .. "/" .. state.Bx .. "/" .. state.Cx .. "]")
+end
+
+function die(message)
+	panic("PAN", message)
+end
+
+function panic(code, message)
+	state.message = message
+	saveState()
+	error(message)
+end
+
+function getCode(data)
+	if data.name == nil then return "nil" end
+	if data.metadata == nil then return data.name
+	else return data.name .. "*" .. data.metadata end
+end
+
+function getOffsetA(level)
+	return math.fmod(math.floor(level / 3), 2) == 1
+end
+
+function fuelReq()
+	return 2 * state.max_down + 2 * state.max_fore + 2 * state.max_left + 2 * state.max_right
+end
+
+function notEnoughFuel()
+	return turtle.getFuelLevel() < (fuelReq() * 3) / 2
+end
+
+function notEnoughSpace()
+	freeSlots = 0
+	for i = 1, 16 do if turtle.getItemCount(i) == 0 then freeSlots = freeSlots + 1 end end
+	return freeSlots < MIN_FREE_SLOTS
+end
+
+function turnOpposite(isRight)
+	if isRight then turtle.turnLeft()
+	else turtle.turnRight() end
+end
+
+-- returns an offset based on the level
+-- the digging is aligned in a diamond shape like this:
+-- .03142.. (<-- this is the "header" row, showing the centroids of the levels, 6 is the same as 1)
+-------------
+-- .0....0.....
+-- 0001.0001...
+-- .0111201112.
+-- ..3122231222
+-- .3334233342.
+-- .5344453444.
+-- 555.4555.4..
+-- .5....5....
+-- therefore, the long tunnels (side tunnels) must be offset by 2 per level
+function getOffsetB(level)
+	m = math.fmod(level, 5)
+	if m == 0 then return 0
+	elseif m == 1 then return 2
+	elseif m == 2 then return 4
+	elseif m == 3 then return 1
+	elseif m == 4 then return 3
+	end
+end
+
+function getEffectiveBx()
+	return math.max(state.Bx, state.offset_fore + getOffsetB(state.A))
+end
+
+function s_pitstop()
+	local b, d = turtle.inspect()
+	if not (b and (getCode(d) == state.dropChestCode)) then die("expected " .. state.dropChestCode .. " for pit stop... (" .. getCode(d) .. ")") end
+
+	-- first, drop all non-fuel items (but drop fuel after first stack skipped)
+	for i = 1, 16 do
+		if turtle.getItemCount(i) > 0 then
+			turtle.select(i)
+			if not turtle.drop() then die("could not drop item, is the chest full?") end
+		end
+	end
+
+	-- then, refuel if necessary
+	if notEnoughFuel() then
+		turtle.select(1)
+		if not turtle.suckUp() then die("could not pick up any fuel") end
+		if not turtle.refuel() then die("could not refuel after picking up fuel") end
+	end
+end
+
+-- ===========================================
+
+ST_FINDHOME = "?h"
+ST_PARAMS = "?p"
+ST_T_INIT = ".i"
+ST_PITSTOP = "pit"
+ST_DOWN = "dn"
+ST_OUT = "out"
+ST_OUT_L = "ouL"
+ST_OUT_R = "ouR"
+ST_IN_L = "inL"
+ST_IN_R = "inR"
+ST_IN = "in"
+ST_FINISHED = "fin"
+ST_UP = "up"
+
+function mainProgram()
+	rednetOpen()
+	loadState()
+	
+	checkStatus()
+	
+	while true do
+		s()
+		if state.status == ST_FINDHOME then s_findHome()
+		elseif state.status == ST_PARAMS then s_params()
+		elseif state.status == ST_T_INIT then s_t_init()
+		elseif state.status == ST_DOWN then s_down()
+		elseif state.status == ST_OUT then s_out()
+		elseif state.status == ST_OUT_L then s_out_side(false, ST_IN_L)
+		elseif state.status == ST_OUT_R then s_out_side(true, ST_IN_R)
+		elseif state.status == ST_IN_L then s_in_side(false)
+		elseif state.status == ST_IN_R then s_in_side(true)
+		elseif state.status == ST_IN then s_in()
+		elseif state.status == ST_UP then s_up()
+		elseif state.status == ST_FINISHED then break
+		elseif state.status == nil then
+			panic("NL-S", "nil status")
+		else
+			panic("UN-S: " .. state.status, "Unknown status: " .. state.status)
+		end
+		
+	end
+	
+	print("Done! (" .. state.status .. ")")
+	s()
+
+	rednetClose()
+end
+
+function checkStatus()
+	if state.status == nil then initState()
+	elseif state.status == ST_FINDHOME then return
+	else
+		print("Current status: " .. state.status)
+		print("Position: " .. state.A .. "/" .. state.B .. "/" .. state.C)
+		print("Progress: " .. state.Ax .. "/" .. state.Bx .. "/" .. state.Cx)
+		print("Do you want to resume from here? (y/n)")
+		
+		event, character, isHeld = os.pullEvent("char")
+		if character == "y" or character == "z" then
+			resume = true
+			state.status = ST_FINDHOME
+		else initState() end
+	end	
+end
+
+function s_findHome()
+	local wasKnown = false
+	term.clear()
+	print("Looking for drop chest...")
+	for i = 1,8 do
+		local b, d = turtle.inspect()
+		if b then
+			code = getCode(d)
+			if state.dropChestCode ~= nil then
+				if code == state.dropChestCode then
+					found = true
+					wasKnown = true
+					break
+				end
+				turtle.turnLeft()
+			else
+				print("Found block: " .. code)
+				print("Is this my drop chest? (y/n)")
+				
+				event, character, isHeld = os.pullEvent("char")
+				if character == "y" or character == "z" then
+					state.dropChestCode = code
+					found = true
+					break
+				elseif character == "n" then
+					print("")
+					turtle.turnLeft()
+				elseif character ~= "n" then
+					print("This is not a valid answer.")
+				end
+			end
+		else turtle.turnLeft()
+		end
+	end
+	
+	if not found then panic("CHEST", "Drop chest not found") end
+	
+	if not wasKnown then
+		print("")
+		print("I assume the drop chest is to my right, looking towards target.")
+		print("Is this correct? (y/n)")
+		event, character, isHeld = os.pullEvent("char")
+		if character ~= "y" and character == "z" then
+			print("Please fix this, and re-start the process.")
+			error("Need drop chest to my right, looking towards target.")
+		end
+	end
+	
+	if resume then
+		print("RESUME")
+		state.A = 0
+		state.B = 0
+		state.C = 0
+		s_pitstop()
+		turtle.turnLeft()
+		state.status = ST_DOWN
+	else
+		state.status = ST_PARAMS
+	end
+end
+
+function s_params()
+	term.clear()
+	
+	print("How many levels to mine (down)? ")
+	state.max_down = math.max(0, tonumber(read()))
+	
+	print("How many blocks *forward*? ")
+	state.max_fore = math.max(1, tonumber(read()))
+	
+	print("How many blocks *left*? ")
+	state.max_left = math.max(0, tonumber(read()))
+	
+	print("How many blocks *right*? ")
+	state.max_right = math.max(1, tonumber(read()))
+	
+	print("How many blocks to protect (offset forward)?")
+	state.offset_fore = math.max(2, tonumber(read()))
+	
+	print("Down: " .. state.max_down)
+	print("Forward: " .. state.max_fore)
+	print("Sides: " .. state.max_left .. " / " .. state.max_right)
+	print("Offset: " .. state.offset_fore)
+	
+	print("Is this correct? (y/n)")
+	event, character, isHeld = os.pullEvent("char")
+	if character == "y" or character == "z" then state.status = ST_T_INIT end
+end
+
+function s_t_init()
+	state.A = 0
+	state.B = 0
+	state.C = 0
+	state.Ax = 0
+	state.Bx = 0
+	state.Cx = 0
+	s_pitstop()
+	turtle.turnLeft()
+	state.status = ST_DOWN
+end
+
+function s_down()
+	if state.Ax >= state.max_down then state.status = ST_FINISHED
+	elseif state.A < state.Ax then
+		tmove.d()
+		state.A = state.A + 1
+		tmove.digUntilFreeDown()
+		
+		-- did I just change offsets?
+		if getOffsetA(state.A) ~= getOffsetA(state.A - 1) then
+			if getOffsetA(state.A) then
+				-- now I am offset, previously I wasn't
+				turtle.turnRight()
+				tmove.f()
+				turtle.turnLeft()
+			else
+				-- now I am not offset, previously I was
+				turtle.turnLeft()
+				tmove.f()
+				turtle.turnRight()
+			end
+		end
+	else
+		state.status = ST_OUT
+	end
+end
+
+function s_out()
+	tmove.f()
+	state.B = state.B + 1
+	state.Bx = math.max(state.Bx, state.B)
+
+	if notEnoughFuel() or notEnoughSpace() then
+		turtle.turnLeft()
+		turtle.turnLeft()
+		state.status = ST_IN
+	elseif state.B >= state.max_fore then
+		turtle.turnLeft()
+		turtle.turnLeft()
+		state.Ax = state.A + 1
+		state.Bx = 0
+		state.Cx = 0
+		state.status = ST_IN
+	elseif state.B >= getEffectiveBx() then
+		if state.Cx <= 0 and state.max_left > 0 then
+			turtle.turnLeft()
+			state.status = ST_OUT_L
+		else
+			turtle.turnRight()
+			state.status = ST_OUT_R
+		end
+	end
+end
+
+function s_out_side(isRight, inStateName)
+	tmove.ff(math.abs(state.C) < math.abs(state.Cx))
+	if isRight then
+		state.C = state.C + 1
+		state.Cx = math.max(state.Cx, state.C)
+	else
+		state.C = state.C - 1
+		state.Cx = math.min(state.Cx, state.C)
+	end
+	
+	m = state.max_left
+	if isRight then m = state.max_right end
+	
+	if getOffsetA(state.A) then
+		if isRight then m = m - 1
+		else m = m + 1 end
+	end
+
+	if notEnoughFuel() or notEnoughSpace() then
+		turtle.turnLeft()
+		turtle.turnLeft()
+		state.status = inStateName
+	elseif math.abs(state.C) >= math.abs(m) then
+		turtle.turnLeft()
+		turtle.turnLeft()
+		state.status = inStateName
+		state.Cx = 0
+	end
+end
+
+function s_in_side(isRight)
+	tmove.f()
+	if isRight then
+		state.C = state.C - 1
+	else
+		state.C = state.C + 1
+	end
+
+	if math.abs(state.C) == 0 then
+		if math.abs(state.Cx) ~= 0 then 
+			turnOpposite(isRight)
+			state.status = ST_IN
+		else
+			if not isRight and state.max_right > 0 then state.status = ST_OUT_R
+			else
+				turtle.turnRight()
+				state.status = ST_OUT
+				state.Bx = state.B + B_SPACING
+			end
+		end
+	end
+end
+
+function s_in()
+	tmove.f()
+	state.B = state.B - 1
+
+	if state.B == 0 then
+		turtle.turnLeft()
+		turtle.turnLeft()
+		state.status = ST_UP
+	end
+end
+
+function s_up()
+	if state.A > 0 then
+		tmove.u()
+		state.A = state.A - 1
+		
+		-- did I just change offsets?
+		if getOffsetA(state.A) ~= getOffsetA(state.A + 1) then
+			if getOffsetA(state.A) then
+				-- now I am offset, previously I wasn't
+				turtle.turnRight()
+				tmove.f()
+				turtle.turnLeft()
+			else
+				-- now I am not offset, previously I was
+				turtle.turnLeft()
+				tmove.f()
+				turtle.turnRight()
+			end
+		end
+	else
+		turtle.turnRight()
+		s_pitstop()
+		turtle.turnLeft()
+		state.status = ST_DOWN
+	end
+end
+
+mainProgram()

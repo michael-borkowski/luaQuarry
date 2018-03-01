@@ -1,0 +1,92 @@
+local SIDES = { "left", "right", "top", "bottom", "front", "back" }
+local PROTOCOL = "luaQuarry"
+
+rednet_side = nil
+function rednetOpen()
+	for index, value in ipairs(SIDES) do
+		if peripheral.getType(value) == "modem" then
+			rednet.open(value)
+			rednet_side = value
+			break
+		end
+	end
+end
+
+function rednetClose()
+	if rednet_side ~= nil then rednet.close(rednet_side) end
+end
+
+local doRun = true
+
+local quarries = {}
+
+function padString (sText, iLen)
+	if sText == nil then sText = "" end
+	local iTextLen = string.len(sText)
+	-- Too short, pad
+	if iTextLen < iLen then
+		local iDiff = iLen - iTextLen
+		return(sText..string.rep(" ",iDiff))
+	end
+	-- Too long, trim
+	if iTextLen > iLen then
+		return(string.sub(sText,1,iLen))
+	end
+	-- Exact length
+	return(sText)
+end
+
+function listenLoop()
+	while doRun do
+		senderId, message = rednet.receive(PROTOCOL, 1)
+		
+		if senderId ~= nil then
+			if message.quarryId ~= nil then
+				local k = message.quarryId
+				quarries[k] = message.state
+			end
+		end
+	end
+end
+
+function displayLoop()
+	term.clear()
+	while doRun do
+		term.clear()
+		term.setCursorPos(1, 1)
+		local index = 1
+		for k, v in pairs(quarries) do
+			if v.progress == nil then v.progress = -1 end
+			if v.A == nil then v.A = -100 end
+			if v.B == nil then v.B = -100 end
+			if v.C == nil then v.C = -100 end
+			if v.Ax == nil then v.Ax = -100 end
+			if v.Bx == nil then v.Bx = -100 end
+			term.write(string.format("%s %s %3d%%|%3d %3d %3d|%3d %3d %s", padString(k, 7), padString(v.status, 3), v.progress, v.A, v.B, v.C, v.Ax, v.Bx, padString(v.message, 100)))
+			
+			index = index + 1
+			term.setCursorPos(1, index)
+		end
+		
+		term.setCursorPos(1, index + 2)
+		term.write("(Press T to terminate)")
+		
+		sleep(0.2)
+	end
+end
+
+function keyInput()
+	while doRun do
+	  local event, key, isHeld = os.pullEvent("key")
+	  
+	  if keys.getName(key) == "t" then doRun = false end
+	end
+end
+
+rednetOpen()
+
+parallel.waitForAll(listenLoop, displayLoop, keyInput)
+
+rednetClose()
+
+print("")
