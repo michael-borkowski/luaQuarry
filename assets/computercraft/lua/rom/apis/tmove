@@ -1,4 +1,14 @@
 local ignoreTable = {}
+local dieFunction = nil
+
+function setDie(f)
+	dieFunction = f
+end
+
+local function die(message)
+	print("!!DIE " .. message)
+	if dieFunction ~= nil then dieFunction(message)
+end
 
 function setIgnoreTable(ignores)
 	ignoreTable = ignores
