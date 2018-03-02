@@ -100,6 +100,7 @@ end
 function die(message)
 	panic("PAN", message)
 end
+tmove.setDie(die)
 
 function panic(code, message)
 	state.message = message
