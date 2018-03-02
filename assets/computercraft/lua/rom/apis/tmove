@@ -7,7 +7,7 @@ end
 
 local function die(message)
 	print("!!DIE " .. message)
-	if dieFunction ~= nil then dieFunction(message)
+	if dieFunction ~= nil then dieFunction(message) end
 end
 
 function setIgnoreTable(ignores)
