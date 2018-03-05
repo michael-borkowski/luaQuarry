@@ -89,6 +89,7 @@ function initState()
 	state.progress = 0
 	state.status = ST_FINDHOME
 	state.message = ""
+	state.label = os.getComputerLabel()
 	saveState()
 end
 
